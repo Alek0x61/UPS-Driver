@@ -4,7 +4,7 @@ int initLog(const char* filename) {
     file = fopen(filename, "a");
     if (!file) {
         fprintf(stderr, "Failed to open log file: %s\n", filename);
-        return NULL;
+        return -1;
     }
 
     return 0;

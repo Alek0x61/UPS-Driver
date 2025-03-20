@@ -62,7 +62,7 @@ int configureINA219() {
 
     if (write(i2c_fd, buf, 3) != 3) {
         LOG_ERROR("%s %s", "Failed to write calibration register:", strerror(errno));
-        return NULL;
+        return -1;
     }
 
     return 0;
@@ -72,13 +72,13 @@ int configureI2C() {
     i2c_fd = open(I2C_DEV, O_RDWR);
     if (i2c_fd < 0) {
         LOG_ERROR("%s %s", "Failed to open I2C device:", strerror(errno));
-        return NULL;
+        return -1;
     }
 
     if (ioctl(i2c_fd, I2C_SLAVE, INA219_ADDR) < 0) {
         LOG_ERROR("%s %s", "Failed to open I2C device:", strerror(errno));
         close(i2c_fd);
-        return NULL;
+        return -1;
     }
 
     return 0;
@@ -86,25 +86,25 @@ int configureI2C() {
 
 int configureAlertService() {
     Result res = setupAlertService(ALERT_PIN);
-    if (res.isSuccess == 0) {
+    if (res.status == -1) {
         LOG_ERROR(res.message);
-        return NULL;
+        return -1;
     }
 
     return 0;
 }
 
-int16_t readRegister(uint8_t reg) {
+int tryReadRegister(uint8_t reg, int16_t* result) {
     uint8_t buf[2];
 
     if (write(i2c_fd, &reg, 1) != 1) {
         LOG_ERROR("%s %s", "Failed to set register address:", strerror(errno));
-        return NULL;
+        return -1;
     }
 
     if (read(i2c_fd, buf, 2) != 2) {
         LOG_ERROR("%s %s", "Failed to read register:", strerror(errno));
-        return NULL;
+        return -1;
     }
 
     uint16_t raw_value = (buf[0] << 8) | buf[1];
@@ -113,7 +113,8 @@ int16_t readRegister(uint8_t reg) {
         raw_value -= 65535;
     }
 
-    return (int16_t)raw_value;
+    *result = (int16_t)raw_value;
+    return 0;
 }
 
 float convertToValidUnit(int16_t rawValue, float lsb) {
@@ -121,24 +122,24 @@ float convertToValidUnit(int16_t rawValue, float lsb) {
 }
 
 float getPower() {
-    int16_t powerRaw = readRegister(REG_POWER);
-    if (!powerRaw)
+    int16_t powerRaw;
+    if (tryReadRegister(REG_POWER, &powerRaw) == -1)
         return NAN;
 
     return (float)convertToValidUnit(powerRaw, POWER_LSB);
 }
 
 float getCurrent() {
-    int16_t currentRaw = readRegister(REG_CURRENT);
-    if (!currentRaw)
+    int16_t currentRaw;
+    if (tryReadRegister(REG_CURRENT, &currentRaw) == -1)
         return NAN;
 
     return convertToValidUnit(currentRaw, CURRENT_LSB);
 }
 
 float getVoltage() {
-    int16_t busVoltageRaw = readRegister(REG_BUS_VOLTAGE);
-    if (!busVoltageRaw)
+    int16_t busVoltageRaw;
+    if (tryReadRegister(REG_BUS_VOLTAGE, &busVoltageRaw) == -1)
         return NAN;
 
     busVoltageRaw = (busVoltageRaw >> 3);
@@ -212,7 +213,7 @@ int calculateChargingSoC(float *soc_mem_ref) {
         *soc_mem_ref = chargeCalibration();
         if (isnan(*soc_mem_ref)) {
             LOG_ERROR("Failed to calibrate SoC during charge");
-            return NULL; 
+            return -1; 
         }
     }
 
@@ -249,7 +250,7 @@ int calculateDischargingSoC(float *soc_mem_ref) {
         *soc_mem_ref = dischargeCalibration();
         if (isnan(*soc_mem_ref)) {
             LOG_ERROR("Failed to calibrate SoC during discharge");
-            return NULL; 
+            return -1; 
         }
     }
 
@@ -290,18 +291,18 @@ int calculateDischargingSoC(float *soc_mem_ref) {
 int main() {
     int returnCode = 0;
 
-    if (!initLog(LOG_FILE_NAME)) {
+    if (initLog(LOG_FILE_NAME) == -1) {
         return -1;
     }
-    if (!configureI2C()) {
+    if (configureI2C() == -1) {
         disposeLogger();
         return -1;
     }
-    if (!configureINA219()) {
+    if (configureINA219() == -1) {
         disposeLogger();
         return -1;
     }
-    if (!configureAlertService()) {
+    if (configureAlertService() == -1) {
         disposeLogger();
         return -1;       
     }
@@ -340,7 +341,7 @@ int main() {
         int state = getState(initial_current);
 
         if (state == Charging) {
-            if (!calculateChargingSoC(soc_mem_ref)) {
+            if (calculateChargingSoC(soc_mem_ref) == -1) {
                 returnCode = -1;
                 break;
             }
@@ -352,7 +353,7 @@ int main() {
             }
         }
         else {
-            if (!calculateDischargingSoC(soc_mem_ref)) {
+            if (calculateDischargingSoC(soc_mem_ref) == -1) {
                 returnCode = -1;
                 break;
             }

@@ -1,4 +1,4 @@
 typedef struct {
-    char isSuccess;
+    char status;
     char message[1024];
 } Result;
