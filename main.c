@@ -7,39 +7,104 @@
 #include <sys/ioctl.h>
 #include <time.h>
 #include <sys/time.h>
+#include <sys/mman.h>
+#include <errno.h>
+#include <string.h>
+#include <math.h>
 
-#define I2C_DEV             "/dev/i2c-1"
-#define INA219_ADDR         0x43 
+#include "alertService/buzzer.h"
+#include "logger/logger.h"
 
-#define REG_BUS_VOLTAGE     0x02
-#define REG_POWER           0x03
-#define REG_CURRENT         0x04
+#define LOG_FILE_NAME        "battery.log"
 
-#define MIN_VOLTAGE         3.100
-#define MAX_VOLTAGE         4.000
+#define I2C_DEV              "/dev/i2c-1"
+#define INA219_ADDR          0x43 
+#define ALERT_PIN            21
+
+#define REG_BUS_VOLTAGE      0x02
+#define REG_POWER            0x03
+#define REG_CURRENT          0x04
+
+#define MIN_VOLTAGE_CUTOFF   3.400
+#define MIN_VOLTAGE_WARNING  3.480
+#define MAX_VOLTAGE          4.000
+#define MAX_POWER            9.0
 
 // Used to convert raw ADC data into real-world units (eg. volts...)
-#define POWER_LSB           0.003048
-#define CURRENT_LSB         0.0001524
-#define VOLTAGE_LSB         0.004
+#define POWER_LSB            0.003048
+#define CURRENT_LSB          0.0001524
+#define VOLTAGE_LSB          0.004
 
-#define CALIBRATION_RETRIES 6
+#define CALIBRATION_RETRIES  3
 
-#define BATTERY_CAPACITY    1 // Ah
+#define BATTERY_CAPACITY     1 // Ah
 
-int fd;
+#define SHM_BACKUP           "battery_shm"
+#define DATA_SIZE            sizeof(float)
+#define RW_PERMISSION        0600
+
+#define REG_CALIBRATION      0x05
+#define CALIBRATION_VALUE    26868
+
+int i2c_fd;
+int fd_file;
+
+enum State { 
+    Charging = 1,
+    Discharging = 0
+};
+
+int configureINA219() {
+    uint8_t buf[3];
+    buf[0] = REG_CALIBRATION;
+    buf[1] = (CALIBRATION_VALUE >> 8) & 0xFF;
+    buf[2] = CALIBRATION_VALUE & 0xFF;
+
+    if (write(i2c_fd, buf, 3) != 3) {
+        LOG_ERROR("%s %s", "Failed to write calibration register:", strerror(errno));
+        return NULL;
+    }
+
+    return 0;
+}
+
+int configureI2C() {
+    i2c_fd = open(I2C_DEV, O_RDWR);
+    if (i2c_fd < 0) {
+        LOG_ERROR("%s %s", "Failed to open I2C device:", strerror(errno));
+        return NULL;
+    }
+
+    if (ioctl(i2c_fd, I2C_SLAVE, INA219_ADDR) < 0) {
+        LOG_ERROR("%s %s", "Failed to open I2C device:", strerror(errno));
+        close(i2c_fd);
+        return NULL;
+    }
+
+    return 0;
+}
+
+int configureAlertService() {
+    Result res = setupAlertService(ALERT_PIN);
+    if (res.isSuccess == 0) {
+        LOG_ERROR(res.message);
+        return NULL;
+    }
+
+    return 0;
+}
 
 int16_t readRegister(uint8_t reg) {
     uint8_t buf[2];
 
-    if (write(fd, &reg, 1) != 1) {
-        perror("Failed to set register address");
-        return -1;
+    if (write(i2c_fd, &reg, 1) != 1) {
+        LOG_ERROR("%s %s", "Failed to set register address:", strerror(errno));
+        return NULL;
     }
 
-    if (read(fd, buf, 2) != 2) {
-        perror("Failed to read register");
-        return -1;
+    if (read(i2c_fd, buf, 2) != 2) {
+        LOG_ERROR("%s %s", "Failed to read register:", strerror(errno));
+        return NULL;
     }
 
     uint16_t raw_value = (buf[0] << 8) | buf[1];
@@ -57,16 +122,25 @@ float convertToValidUnit(int16_t rawValue, float lsb) {
 
 float getPower() {
     int16_t powerRaw = readRegister(REG_POWER);
+    if (!powerRaw)
+        return NAN;
+
     return (float)convertToValidUnit(powerRaw, POWER_LSB);
 }
 
 float getCurrent() {
     int16_t currentRaw = readRegister(REG_CURRENT);
+    if (!currentRaw)
+        return NAN;
+
     return convertToValidUnit(currentRaw, CURRENT_LSB);
 }
 
 float getVoltage() {
     int16_t busVoltageRaw = readRegister(REG_BUS_VOLTAGE);
+    if (!busVoltageRaw)
+        return NAN;
+
     busVoltageRaw = (busVoltageRaw >> 3);
     return convertToValidUnit(busVoltageRaw, VOLTAGE_LSB);
 }
@@ -74,8 +148,8 @@ float getVoltage() {
 float trimSoc(float soc) {
     if (soc < 0)
         return 0;
-    if (soc > 100)
-        return 100;
+    if (soc > 1)
+        return 1;
     return soc;
 }
 
@@ -86,8 +160,7 @@ float dischargeCalibration() {
         sleep(2);
     }
 
-    float soc = ((busVoltage - MIN_VOLTAGE) / (MAX_VOLTAGE - MIN_VOLTAGE)) * 100;
-    soc = trimSoc(soc);
+    float soc = (busVoltage - MIN_VOLTAGE_WARNING) / (MAX_VOLTAGE - MIN_VOLTAGE_WARNING);
     return soc;
 }
 
@@ -95,91 +168,211 @@ float chargeCalibration() {
     float power = 0;
     for (char i = 0; i < CALIBRATION_RETRIES; i++) {
         power = getPower();
-        sleep(2);
+        sleep(1);
     }
-
-    return 100.0 - ((power / 9.5) * 100.0);
+    return 1 - (power / MAX_POWER);
 }
 
-float calibrateStartingPercentage() {
-    float current = getCurrent();
-
+int getState(float current) {
     if (current > 0) {
-        return chargeCalibration();
+        return Charging;
     }
 
-    return dischargeCalibration();
+    return Discharging;
 }
 
-void logDebug(double dt, float busVoltage, float current, float power, float integrated_charge, float soc) {
-    FILE *file = fopen("battery_data.csv", "a");
-    if (file == NULL) {
-        perror("Failed to open CSV file");
-        return;
+double calculateDeltaTime(struct timeval previous_time) {
+    struct timeval current_time;
+
+    gettimeofday(&current_time, NULL);
+
+    double delta_time = (double)(current_time.tv_sec - previous_time.tv_sec) +
+                (double)(current_time.tv_usec - previous_time.tv_usec) / 1000000.0;
+    
+    previous_time = current_time; 
+
+    if (delta_time >= 6) {
+        delta_time = 5.005;
     }
 
-    fprintf(file, "%.6f,%.3f,%.3f,%.3f,%.4f,%.1f\n", dt, busVoltage, current, power, integrated_charge, soc);
-    fclose(file);
+    return delta_time;
 }
 
-void createLogFile() {
-    FILE *file = fopen("battery_data.csv", "r");
-    if (file == NULL) {
-        file = fopen("battery_data.csv", "w");
-        if (file != NULL) {
-            fprintf(file, "Time(s),Voltage(V),Current(A),Power(W),Charge(Ah),SoC(%%)\n");
-            fclose(file);
+float updateStateOfCharge(float soc, float current, float time_hours) {
+    return soc + (current / BATTERY_CAPACITY) * time_hours;
+}
+
+void syncMemory(float *soc_mem_ref) {
+    msync(soc_mem_ref, DATA_SIZE, MS_SYNC);
+    fsync(fd_file);
+}
+
+int calculateChargingSoC(float *soc_mem_ref) {
+    if (*soc_mem_ref == 0) {
+        *soc_mem_ref = chargeCalibration();
+        if (isnan(*soc_mem_ref)) {
+            LOG_ERROR("Failed to calibrate SoC during charge");
+            return NULL; 
         }
-    } else {
-        fclose(file);
+    }
+
+    struct timeval previous_time;
+    gettimeofday(&previous_time, NULL);
+
+    while (1) {
+        float current = getCurrent();
+
+        if (isnan(current)) {
+            LOG_ERROR("Failed to get valid electrical measurements");
+            return NULL; 
+        }
+
+        double delta_time = calculateDeltaTime(previous_time);
+        double time_hours = delta_time / 3600.00;
+
+        *soc_mem_ref = updateStateOfCharge(*soc_mem_ref, current, time_hours);
+
+        if (current == 0) {
+            return 0;
+        }
+
+        *soc_mem_ref = trimSoc(*soc_mem_ref);
+
+        syncMemory(soc_mem_ref);
+
+        sleep(5);
     }
 }
+
+int calculateDischargingSoC(float *soc_mem_ref) {
+    if (*soc_mem_ref == 0) {
+        *soc_mem_ref = dischargeCalibration();
+        if (isnan(*soc_mem_ref)) {
+            LOG_ERROR("Failed to calibrate SoC during discharge");
+            return NULL; 
+        }
+    }
+
+    struct timeval previous_time;
+    gettimeofday(&previous_time, NULL);
+
+    while (1) {
+        float voltage = getVoltage();
+        float current = getCurrent();
+
+        if (isnan(voltage) || isnan(current)) {
+            LOG_ERROR("Failed to get valid electrical measurements");
+            return NULL; 
+        }
+
+        double delta_time = calculateDeltaTime(previous_time);
+        double time_hours = (delta_time - 0.2) / 3600.00;
+
+        *soc_mem_ref = updateStateOfCharge(*soc_mem_ref, current, time_hours);
+
+        if (voltage < MIN_VOLTAGE_CUTOFF) {
+            return 0;
+        }
+
+        if (voltage < MIN_VOLTAGE_WARNING) {
+            alert();
+        }
+
+        *soc_mem_ref = trimSoc(*soc_mem_ref);
+
+        syncMemory(soc_mem_ref);
+
+        sleep(5);
+    }
+}
+
 
 int main() {
-    fd = open(I2C_DEV, O_RDWR);
-    if (fd < 0) {
-        perror("Failed to open I2C device");
-        return 1;
+    int returnCode = 0;
+
+    if (!initLog(LOG_FILE_NAME)) {
+        return -1;
+    }
+    if (!configureI2C()) {
+        disposeLogger();
+        return -1;
+    }
+    if (!configureINA219()) {
+        disposeLogger();
+        return -1;
+    }
+    if (!configureAlertService()) {
+        disposeLogger();
+        return -1;       
     }
 
-    if (ioctl(fd, I2C_SLAVE, INA219_ADDR) < 0) {
-        perror("Failed to set I2C address");
-        close(fd);
-        return 1;
+    fd_file = open(SHM_BACKUP, O_CREAT | O_RDWR, RW_PERMISSION);
+    if (fd_file == -1) {
+        LOG_ERROR("%s %s", "Failed to open shared memory file:", strerror(errno));
+        return -1;
     }
 
-    float initial_soc = calibrateStartingPercentage();
+    ftruncate(fd_file, DATA_SIZE);
 
-    createLogFile();
+    float *soc_mem_ref = mmap(NULL, DATA_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd_file, 0);
+    if (soc_mem_ref == MAP_FAILED) {
+        LOG_ERROR("%s %s", "mmap failed:", strerror(errno));
+        close(fd_file);
+        return -1;
+    }
 
-    float initial_charge = BATTERY_CAPACITY * initial_soc / 100.0;
-
-    float integrated_charge = 0.0;
-
-    struct timeval previous_time, current_time;
-    gettimeofday(&previous_time, NULL);
-    
     while (1) {
-        gettimeofday(&current_time, NULL);
+        float initial_power = getPower();
+        if (isnan(initial_power)) {
+            returnCode = -1;
+            break;
+        }
+        if (initial_power < 0.1 && *soc_mem_ref == 100.0) {
+            continue;
+        }
 
-        double dt = (double)(current_time.tv_sec - previous_time.tv_sec) +
-                    (double)(current_time.tv_usec - previous_time.tv_usec) / 1000000.0;
-        
-        previous_time = current_time; 
+        float initial_current = getCurrent();
+        if (isnan(initial_current)) {
+            returnCode = -1;
+            break;
+        }
 
-        float busVoltage = getVoltage();
-        float current = getCurrent();
-        float power = getPower();
+        int state = getState(initial_current);
 
-        integrated_charge += current * (dt / 3600.0);
+        if (state == Charging) {
+            if (!calculateChargingSoC(soc_mem_ref)) {
+                returnCode = -1;
+                break;
+            }
+            while (*soc_mem_ref < 100) {
+                *(soc_mem_ref) += 1;
+                syncMemory(soc_mem_ref);
 
-        float soc = (initial_charge + integrated_charge) / BATTERY_CAPACITY * 100;
-        soc = trimSoc(soc);
-
-        logDebug(dt, busVoltage, current, power, integrated_charge, soc);
+                sleep(1);
+            }
+        }
+        else {
+            if (!calculateDischargingSoC(soc_mem_ref)) {
+                returnCode = -1;
+                break;
+            }
+            while (*soc_mem_ref > 0) {
+                *(soc_mem_ref) -= 1; 
+                syncMemory(soc_mem_ref);
+ 
+                sleep(1);
+            }
+            system("sudo shutdown -h now");
+        }
         sleep(5);
     }
 
-    close(fd);
-    return 0;
+    close(i2c_fd);
+    close(fd_file);
+    munmap(soc_mem_ref, DATA_SIZE);
+    shm_unlink(SHM_BACKUP); 
+    disposeAlertService();
+    disposeLogger();
+
+    return returnCode;
 }

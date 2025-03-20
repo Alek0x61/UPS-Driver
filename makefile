@@ -1,10 +1,12 @@
 CC = gcc
+CFLAGS = -D GPIOD
+LIBS = -lgpiod
 
-SRCS = main.c
+SRCS = main.c alertService/buzzer.c
 TARGET = main
 
 $(TARGET): $(SRCS)
-	$(CC) $(SRCS) -o $(TARGET)
+	$(CC) $(CFLAGS) $(SRCS) $(LIBS) -o $(TARGET)
 
 run: $(TARGET)
 	./$(TARGET) -d
