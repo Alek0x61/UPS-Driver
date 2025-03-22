@@ -29,7 +29,6 @@ Result setupAlertService(char pin) {
     }
 
     res.status = 0;
-
     return res;
 }
 

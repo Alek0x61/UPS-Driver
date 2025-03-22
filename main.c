@@ -14,37 +14,27 @@
 
 #include "alertService/buzzer.h"
 #include "logger/logger.h"
+#include "electricalDataService/electricalData.h"
+#include "i2cService/i2cService.h"
+#include "dataLogger/dataLogger.h"
 
-#define LOG_FILE_NAME        "battery.log"
+#define MESSAGE_LOGGER_PATH     "/var/lib/battery.log"
+#define DATA_LOGGER_PATH        "/var/lib/battery_data.csv"
+#define SHM_BACKUP              "/var/lib/battery_shm"
+#define DATA_LOGGER_ENABLED     1
+#define INFO_LOGGER_ENABLED     1
+#define ALERT_ENABLED           1
 
-#define I2C_DEV              "/dev/i2c-1"
-#define INA219_ADDR          0x43 
-#define ALERT_PIN            21
+#define ALERT_PIN               21
+#define MIN_VOLTAGE_CUTOFF      3.300
+#define LOW_BATTERY_ALERT       0.005
+#define BATTERY_CAPACITY        1 // Ah
 
-#define REG_BUS_VOLTAGE      0x02
-#define REG_POWER            0x03
-#define REG_CURRENT          0x04
+#define DATA_SIZE               sizeof(float)
+#define RW_PERMISSION           0600
 
-#define MIN_VOLTAGE_CUTOFF   3.400
-#define MIN_VOLTAGE_WARNING  3.480
-#define MAX_VOLTAGE          4.000
-#define MAX_POWER            9.0
-
-// Used to convert raw ADC data into real-world units (eg. volts...)
-#define POWER_LSB            0.003048
-#define CURRENT_LSB          0.0001524
-#define VOLTAGE_LSB          0.004
-
-#define CALIBRATION_RETRIES  3
-
-#define BATTERY_CAPACITY     1 // Ah
-
-#define SHM_BACKUP           "battery_shm"
-#define DATA_SIZE            sizeof(float)
-#define RW_PERMISSION        0600
-
-#define REG_CALIBRATION      0x05
-#define CALIBRATION_VALUE    26868
+#define REG_CALIBRATION         0x05
+#define CALIBRATION_VALUE       26868
 
 int i2c_fd;
 int fd_file;
@@ -68,84 +58,6 @@ int configureINA219() {
     return 0;
 }
 
-int configureI2C() {
-    i2c_fd = open(I2C_DEV, O_RDWR);
-    if (i2c_fd < 0) {
-        LOG_ERROR("%s %s", "Failed to open I2C device:", strerror(errno));
-        return -1;
-    }
-
-    if (ioctl(i2c_fd, I2C_SLAVE, INA219_ADDR) < 0) {
-        LOG_ERROR("%s %s", "Failed to open I2C device:", strerror(errno));
-        close(i2c_fd);
-        return -1;
-    }
-
-    return 0;
-}
-
-int configureAlertService() {
-    Result res = setupAlertService(ALERT_PIN);
-    if (res.status == -1) {
-        LOG_ERROR(res.message);
-        return -1;
-    }
-
-    return 0;
-}
-
-int tryReadRegister(uint8_t reg, int16_t* result) {
-    uint8_t buf[2];
-
-    if (write(i2c_fd, &reg, 1) != 1) {
-        LOG_ERROR("%s %s", "Failed to set register address:", strerror(errno));
-        return -1;
-    }
-
-    if (read(i2c_fd, buf, 2) != 2) {
-        LOG_ERROR("%s %s", "Failed to read register:", strerror(errno));
-        return -1;
-    }
-
-    uint16_t raw_value = (buf[0] << 8) | buf[1];
-
-    if (raw_value > 32767) {  
-        raw_value -= 65535;
-    }
-
-    *result = (int16_t)raw_value;
-    return 0;
-}
-
-float convertToValidUnit(int16_t rawValue, float lsb) {
-    return rawValue * lsb;
-}
-
-float getPower() {
-    int16_t powerRaw;
-    if (tryReadRegister(REG_POWER, &powerRaw) == -1)
-        return NAN;
-
-    return (float)convertToValidUnit(powerRaw, POWER_LSB);
-}
-
-float getCurrent() {
-    int16_t currentRaw;
-    if (tryReadRegister(REG_CURRENT, &currentRaw) == -1)
-        return NAN;
-
-    return convertToValidUnit(currentRaw, CURRENT_LSB);
-}
-
-float getVoltage() {
-    int16_t busVoltageRaw;
-    if (tryReadRegister(REG_BUS_VOLTAGE, &busVoltageRaw) == -1)
-        return NAN;
-
-    busVoltageRaw = (busVoltageRaw >> 3);
-    return convertToValidUnit(busVoltageRaw, VOLTAGE_LSB);
-}
-
 float trimSoc(float soc) {
     if (soc < 0)
         return 0;
@@ -154,45 +66,27 @@ float trimSoc(float soc) {
     return soc;
 }
 
-float dischargeCalibration() {
-    float busVoltage = 0;
-    for (char i = 0; i < CALIBRATION_RETRIES; i++) {
-        busVoltage = getVoltage();
-        sleep(2);
-    }
-
-    float soc = (busVoltage - MIN_VOLTAGE_WARNING) / (MAX_VOLTAGE - MIN_VOLTAGE_WARNING);
-    return soc;
-}
-
-float chargeCalibration() {
-    float power = 0;
-    for (char i = 0; i < CALIBRATION_RETRIES; i++) {
-        power = getPower();
-        sleep(1);
-    }
-    return 1 - (power / MAX_POWER);
-}
-
 int getState(float current) {
     if (current > 0) {
         return Charging;
     }
-
     return Discharging;
 }
 
-double calculateDeltaTime(struct timeval previous_time) {
+double calculateDeltaTime(struct timeval* previous_time) {
     struct timeval current_time;
 
     gettimeofday(&current_time, NULL);
 
-    double delta_time = (double)(current_time.tv_sec - previous_time.tv_sec) +
-                (double)(current_time.tv_usec - previous_time.tv_usec) / 1000000.0;
+    double delta_time = (double)(current_time.tv_sec - previous_time->tv_sec) +
+                (double)(current_time.tv_usec - previous_time->tv_usec) / 1000000.0;
     
-    previous_time = current_time; 
+    *previous_time = current_time; 
 
-    if (delta_time >= 6) {
+    if (delta_time > 7) {
+        #if INFO_LOGGER_ENABLED
+            LOG_INFO("delta time dillation: %.6f seconds\n", delta_time);
+        #endif
         delta_time = 5.005;
     }
 
@@ -209,29 +103,47 @@ void syncMemory(float *soc_mem_ref) {
 }
 
 int calculateChargingSoC(float *soc_mem_ref) {
-    if (*soc_mem_ref == 0) {
-        *soc_mem_ref = chargeCalibration();
-        if (isnan(*soc_mem_ref)) {
-            LOG_ERROR("Failed to calibrate SoC during charge");
-            return -1; 
-        }
+    float calibration = chargeCalibration();
+    if (isnan(calibration)) {
+        LOG_ERROR("Failed to calibrate SoC during charge");
+        return -1; 
+    }
+
+    if (abs(*soc_mem_ref - calibration) > 0) {
+        *soc_mem_ref = calibration;
     }
 
     struct timeval previous_time;
     gettimeofday(&previous_time, NULL);
 
     while (1) {
-        float current = getCurrent();
-
-        if (isnan(current)) {
-            LOG_ERROR("Failed to get valid electrical measurements");
-            return NULL; 
+        float current;
+        float currentRes = tryReadCurrent(&current);
+        if (currentRes < 0) {
+            LOG_ERROR("Failed to get valid current measurement %s", strerror(currentRes));
+            return -1; 
         }
 
-        double delta_time = calculateDeltaTime(previous_time);
-        double time_hours = delta_time / 3600.00;
+        double delta_time = calculateDeltaTime(&previous_time);
+        double time_hours = (delta_time - 0.8) / 3600.00;
 
         *soc_mem_ref = updateStateOfCharge(*soc_mem_ref, current, time_hours);
+
+        #if DATA_LOGGER_ENABLED
+            float voltage;
+            float power;
+
+            float voltageRes = tryReadVoltage(&voltage);
+            if (voltageRes < 0) {
+                LOG_ERROR("Failed to get valid voltage measurement %s", strerror(voltageRes));
+            }
+
+            float powerRes = tryReadPower(&power);
+            if (powerRes < 0) {
+                LOG_ERROR("Failed to get valid power measurement %s", strerror(powerRes));
+            }
+            logMessages(current, power, voltage, delta_time, *soc_mem_ref);
+        #endif
 
         if (current == 0) {
             return 0;
@@ -258,16 +170,23 @@ int calculateDischargingSoC(float *soc_mem_ref) {
     gettimeofday(&previous_time, NULL);
 
     while (1) {
-        float voltage = getVoltage();
-        float current = getCurrent();
+        float voltage;
+        float current;
 
-        if (isnan(voltage) || isnan(current)) {
-            LOG_ERROR("Failed to get valid electrical measurements");
-            return NULL; 
+        float voltageRes = tryReadVoltage(&voltage);
+        if (voltageRes < 0) {
+            LOG_ERROR("Failed to get valid voltage measurement %s", strerror(voltageRes));
+            return -1; 
         }
 
-        double delta_time = calculateDeltaTime(previous_time);
-        double time_hours = (delta_time - 0.2) / 3600.00;
+        float currentRes = tryReadCurrent(&current);
+        if (currentRes < 0) {
+            LOG_ERROR("Failed to get valid current measurement %s", strerror(currentRes));
+            return -1; 
+        }
+
+        double delta_time = calculateDeltaTime(&previous_time);
+        double time_hours = (delta_time - 0.8) / 3600.00;
 
         *soc_mem_ref = updateStateOfCharge(*soc_mem_ref, current, time_hours);
 
@@ -275,9 +194,20 @@ int calculateDischargingSoC(float *soc_mem_ref) {
             return 0;
         }
 
-        if (voltage < MIN_VOLTAGE_WARNING) {
-            alert();
-        }
+        #if ALERT_ENABLED 
+            if (*soc_mem_ref <= LOW_BATTERY_ALERT) {
+                alert();
+            }
+        #endif
+
+        #if DATA_LOGGER_ENABLED
+            float power;
+            float powerRes = tryReadPower(&power);
+            if (powerRes < 0) {
+                LOG_ERROR("Failed to get valid power measurement %s", strerror(powerRes));
+            }
+            logMessages(current, power, voltage, delta_time, *soc_mem_ref);
+        #endif
 
         *soc_mem_ref = trimSoc(*soc_mem_ref);
 
@@ -287,29 +217,69 @@ int calculateDischargingSoC(float *soc_mem_ref) {
     }
 }
 
+void cleanup(int i2c_fd, int fd_file, float *soc_mem_ref) {
+    if (i2c_fd != -1) {
+        close(i2c_fd);
+    }
+    if (fd_file != -1) {
+        close(fd_file);
+    }
+    if (soc_mem_ref != MAP_FAILED && soc_mem_ref != NULL) {
+        munmap(soc_mem_ref, DATA_SIZE);
+    }
+    shm_unlink(SHM_BACKUP);
+    disposeAlertService();
+    disposeLogger();
+}
+
+int isOnChargerFullyCharged() {
+    float power;
+    float powerRes = tryReadPower(&power);
+    if (powerRes < 0) {
+        return -1;
+    }
+    if (power < 0.1) {
+        return 1;
+    }
+    return 0;
+}
+
+int isBatteryDepleted() {
+    float voltage;
+    tryReadVoltage(&voltage);
+    return voltage < MIN_VOLTAGE_CUTOFF;
+}
 
 int main() {
-    int returnCode = 0;
+    if (initLog(MESSAGE_LOGGER_PATH) == -1) {
+        return -1;
+    }
 
-    if (initLog(LOG_FILE_NAME) == -1) {
+    Result resI2C = configureI2C(&i2c_fd);
+    if (resI2C.status == -1) {
+        LOG_ERROR(resI2C.message);
+        cleanup(i2c_fd, fd_file, NULL);
         return -1;
     }
-    if (configureI2C() == -1) {
-        disposeLogger();
-        return -1;
-    }
+
     if (configureINA219() == -1) {
-        disposeLogger();
+        cleanup(i2c_fd, fd_file, NULL);
         return -1;
     }
-    if (configureAlertService() == -1) {
-        disposeLogger();
-        return -1;       
+
+    Result resAlertService = setupAlertService(ALERT_PIN);
+    if (resAlertService.status == -1) {
+        LOG_ERROR(resAlertService.message);
+        cleanup(i2c_fd, fd_file, NULL);
+        return -1;
     }
+
+    configureElectricalData(i2c_fd);
 
     fd_file = open(SHM_BACKUP, O_CREAT | O_RDWR, RW_PERMISSION);
     if (fd_file == -1) {
         LOG_ERROR("%s %s", "Failed to open shared memory file:", strerror(errno));
+        cleanup(i2c_fd, fd_file, NULL);
         return -1;
     }
 
@@ -318,62 +288,83 @@ int main() {
     float *soc_mem_ref = mmap(NULL, DATA_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd_file, 0);
     if (soc_mem_ref == MAP_FAILED) {
         LOG_ERROR("%s %s", "mmap failed:", strerror(errno));
-        close(fd_file);
+        cleanup(i2c_fd, fd_file, soc_mem_ref);
         return -1;
     }
 
+    #if DATA_LOGGER_ENABLED
+        Result resCreateLog = createLogFile(DATA_LOGGER_PATH);
+        if (resCreateLog.status == -1) {
+            LOG_ERROR(resCreateLog.message);
+        }
+    #endif
+
+    #if INFO_LOGGER_ENABLED
+        LOG_INFO("Initial SoC: %.3f\n", *soc_mem_ref);
+    #endif
+
     while (1) {
-        float initial_power = getPower();
-        if (isnan(initial_power)) {
-            returnCode = -1;
-            break;
-        }
-        if (initial_power < 0.1 && *soc_mem_ref == 100.0) {
+        if (isOnChargerFullyCharged() == 1)
             continue;
-        }
 
-        float initial_current = getCurrent();
-        if (isnan(initial_current)) {
-            returnCode = -1;
-            break;
-        }
-
-        int state = getState(initial_current);
-
-        if (state == Charging) {
-            if (calculateChargingSoC(soc_mem_ref) == -1) {
-                returnCode = -1;
-                break;
-            }
-            while (*soc_mem_ref < 100) {
-                *(soc_mem_ref) += 1;
-                syncMemory(soc_mem_ref);
-
-                sleep(1);
-            }
-        }
-        else {
-            if (calculateDischargingSoC(soc_mem_ref) == -1) {
-                returnCode = -1;
-                break;
-            }
-            while (*soc_mem_ref > 0) {
-                *(soc_mem_ref) -= 1; 
-                syncMemory(soc_mem_ref);
- 
-                sleep(1);
-            }
+        if (isBatteryDepleted() == 1) {
+            #if ALERT_ENABLED 
+                alert();
+            #endif
             system("sudo shutdown -h now");
         }
+
+        float initialCurrent;
+        float initialCurrentRes = tryReadCurrent(&initialCurrent);
+        if (initialCurrentRes < 0) {
+            LOG_ERROR("Failed to get valid current measurement %s", strerror(initialCurrentRes));
+            continue;
+        }
+        int state = getState(initialCurrent);
+
+        if (state == Discharging) {
+            if (calculateDischargingSoC(soc_mem_ref) == -1) {
+                cleanup(i2c_fd, fd_file, soc_mem_ref);
+                return -1;
+            }
+            while (*soc_mem_ref > 0) {
+                *(soc_mem_ref) -= 0.01; 
+                LOG_INFO("Initial SoC: %.3f\n", *soc_mem_ref);
+
+                #if ALERT_ENABLED 
+                    if (*soc_mem_ref <= LOW_BATTERY_ALERT) {
+                        alert();
+                    }
+                #endif
+
+                syncMemory(soc_mem_ref);
+                sleep(1);
+            }
+            *soc_mem_ref = trimSoc(*soc_mem_ref);
+            syncMemory(soc_mem_ref);
+            system("sudo shutdown -h now");
+
+            return 0;
+        }
+
+        if (calculateChargingSoC(soc_mem_ref) == -1) {
+            cleanup(i2c_fd, fd_file, soc_mem_ref);
+            return -1;
+        }
+        while (*soc_mem_ref < 1) {
+            *(soc_mem_ref) += 0.01;
+            LOG_INFO("Initial SoC: %.3f\n", *soc_mem_ref);
+
+            syncMemory(soc_mem_ref);
+            sleep(1);
+        }
+        *soc_mem_ref = trimSoc(*soc_mem_ref);
+        syncMemory(soc_mem_ref);
+
         sleep(5);
     }
 
-    close(i2c_fd);
-    close(fd_file);
-    munmap(soc_mem_ref, DATA_SIZE);
-    shm_unlink(SHM_BACKUP); 
-    disposeAlertService();
-    disposeLogger();
+    cleanup(i2c_fd, fd_file, soc_mem_ref);
 
-    return returnCode;
+    return 0;
 }

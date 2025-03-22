@@ -3,7 +3,7 @@
 
 #include <stdio.h>
 #include <unistd.h>
-#include "../result.c"
+#include "../result.h"
 #include <errno.h>
 #include <string.h>
 
