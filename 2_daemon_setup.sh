@@ -3,12 +3,17 @@
 echo "Installing required dependencies..."
 
 sudo apt update
-sudo apt install lgpiod
+sudo apt install libgpiod-dev
 
 echo "Setting up the daemon..."
 
 USER="alek"
 GROUP="users"
+LOGPATH="/var/lib/"
+
+echo "Editing Permissions..."
+chown "$USER":"$GROUP" "$LOGPATH"
+chmod 700 "$LOGPATH"
 
 APP_PATH="/home/$USER/UPS-driver"
 APP_PATH_EXECUTABLE="$APP_PATH/main"

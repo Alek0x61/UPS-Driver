@@ -1,4 +1,4 @@
-#include "buzzer.h"
+#include "../include/buzzer.h"
 
 struct gpiod_chip *chip;
 struct gpiod_line *line;

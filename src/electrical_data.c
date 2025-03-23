@@ -1,4 +1,4 @@
-#include "electricalData.h"
+#include "../include/electrical_data.h"
 
 #define REG_BUS_VOLTAGE      0x02
 #define REG_POWER            0x03

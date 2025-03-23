@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h> 
-#include "../result.h"
+#include "types/result.h"
 #include <errno.h>
 
 int logMessages(float current, float power, float voltage, double delta_time, float soc);

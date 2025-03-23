@@ -2,7 +2,7 @@ CC = gcc
 CFLAGS = -D GPIOD
 LIBS = -lgpiod
 
-SRCS = main.c alertService/buzzer.c logger/logger.c electricalDataService/electricalData.c i2cService/i2cService.c dataLogger/dataLogger.c result.h
+SRCS = main.c src/battery_soc.c src/buzzer.c src/logger.c src/electrical_data.c src/i2c_service.c src/data_logger.c include/types/result.h include/types/battery_state.h globalConfig.h
 TARGET = main
 
 $(TARGET): $(SRCS)

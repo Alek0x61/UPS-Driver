@@ -1,4 +1,4 @@
-#include "i2cService.h"
+#include "../include/i2c_service.h"
 
 #define I2C_DEV              "/dev/i2c-1"
 #define INA219_ADDR          0x43 

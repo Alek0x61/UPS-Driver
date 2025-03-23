@@ -1,9 +1,9 @@
-#include "logger.h"
+#include "../include/logger.h"
 
 int initLog(const char* filename) {
     file = fopen(filename, "a");
     if (!file) {
-        fprintf(stderr, "Failed to open log file: %s\n", filename);
+        perror("Failed to open log file");
         return -1;
     }
 
@@ -36,7 +36,8 @@ void logMessage(int logLevel, const char* format, ...) {
 
     vfprintf(file, format, args);
     fprintf(file, "\n");
-
+    fflush(file); 
+    
     va_end(args);
 }
 

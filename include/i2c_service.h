@@ -5,7 +5,7 @@
 #include <string.h>
 #include <linux/i2c-dev.h>
 #include <fcntl.h>
-#include "../result.h"
+#include "types/result.h"
 #include <stdio.h>
 #include <sys/ioctl.h>
 #include <unistd.h>

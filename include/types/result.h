@@ -1,5 +1,5 @@
-#ifndef Result_H
-#define Result_H
+#ifndef RESULT_H
+#define RESULT_H
 
 typedef struct {
     char status;
