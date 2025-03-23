@@ -83,8 +83,12 @@ int calculateChargingSoC(float *soc_mem_ref) {
             return -1; 
         }
 
+        if (current < 0) { // Charger was unplugged
+            return 0;
+        }
+
         double delta_time = calculateDeltaTime(&previous_time);
-        double time_hours = (delta_time - 0.7) / 3600.00;
+        double time_hours = (delta_time - 0.6) / 3600.00;
 
         *soc_mem_ref = updateStateOfCharge(*soc_mem_ref, current, time_hours);
 
@@ -104,23 +108,24 @@ int calculateChargingSoC(float *soc_mem_ref) {
             logMessages(current, power, voltage, delta_time, *soc_mem_ref);
         #endif
 
-        if (current == 0) {
-            return 0;
-        }
-
         *soc_mem_ref = trimSoc(*soc_mem_ref);
 
         sleep(5);
+
+        if (current == 0) {
+            break;
+        }
     }
     while (*soc_mem_ref < 1) {
         *(soc_mem_ref) += 0.01;
         #if INFO_LOGGER_ENABLED
-            LOG_INFO("Initial SoC: %.3f", *soc_mem_ref);
+            LOG_INFO("Gracefully decreasing SoC : %.3f", *soc_mem_ref);
         #endif
 
         sleep(1);
     }
     *soc_mem_ref = trimSoc(*soc_mem_ref);
+    return 0;
 }
 
 int calculateDischargingSoC(float *soc_mem_ref) {
@@ -132,18 +137,21 @@ int calculateDischargingSoC(float *soc_mem_ref) {
     gettimeofday(&previous_time, NULL);
 
     while (1) {
-        float voltage;
         float current;
-
-        float voltageRes = tryReadVoltage(&voltage);
-        if (voltageRes < 0) {
-            LOG_ERROR("Failed to get valid voltage measurement %s", strerror(voltageRes));
-            return -1; 
-        }
-
         float currentRes = tryReadCurrent(&current);
         if (currentRes < 0) {
             LOG_ERROR("Failed to get valid current measurement %s", strerror(currentRes));
+            return -1; 
+        }
+
+        if (current > 0) { // Charger was plugged
+            return 0;
+        }
+
+        float voltage;
+        float voltageRes = tryReadVoltage(&voltage);
+        if (voltageRes < 0) {
+            LOG_ERROR("Failed to get valid voltage measurement %s", strerror(voltageRes));
             return -1; 
         }
 
@@ -153,7 +161,7 @@ int calculateDischargingSoC(float *soc_mem_ref) {
         *soc_mem_ref = updateStateOfCharge(*soc_mem_ref, current, time_hours);
 
         if (voltage < MIN_VOLTAGE_CUTOFF) {
-            return 0;
+            break;
         }
 
         #if DATA_LOGGER_ENABLED
@@ -172,9 +180,10 @@ int calculateDischargingSoC(float *soc_mem_ref) {
     while (*soc_mem_ref > 0) {
         *(soc_mem_ref) -= 0.01; 
         #if INFO_LOGGER_ENABLED
-            LOG_INFO("Initial SoC: %.3f", *soc_mem_ref);
+            LOG_INFO("Gracefully increasing SoC: %.3f", *soc_mem_ref);
         #endif
         sleep(1);
     }
     *soc_mem_ref = trimSoc(*soc_mem_ref);
+    return 0;
 }
