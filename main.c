@@ -39,18 +39,21 @@ void cleanup(int i2cFd, int fd_file, float *soc_mem_ref) {
     disposeLogger();
 }
 
-int configureINA219(int i2cFd) {
+Result configureINA219(int i2cFd) {
+    Result res;
+    res.status = 0;
+
     uint8_t buf[3];
     buf[0] = REG_CALIBRATION;
     buf[1] = (CALIBRATION_VALUE >> 8) & 0xFF;
     buf[2] = CALIBRATION_VALUE & 0xFF;
 
     if (write(i2cFd, buf, 3) != 3) {
-        LOG_ERROR("%s %s", "Failed to write calibration register:", strerror(errno));
-        return -1;
+        snprintf(res.message, sizeof(res.message), "Failed to write calibration register: %s", strerror(errno));
+        res.status = -1;
     }
 
-    return 0;
+    return res;
 }
 
 SetupResult setup() {
@@ -65,26 +68,35 @@ SetupResult setup() {
 
     Result resI2C = configureI2C(&res.i2cFd);
     if (resI2C.status == -1) {
-        LOG_ERROR(resI2C.message);
         cleanup(res.i2cFd, res.fileFd, NULL);
+        LOG_ERROR(resI2C.message);
         return res;
     }
 
-    if (configureINA219(res.i2cFd) == -1) {
+    Result resIn1219 = configureINA219(res.i2cFd);
+    if (resIn1219.status == -1) {
         cleanup(res.i2cFd, res.fileFd, NULL);
+        LOG_ERROR(resI2C.message);
         return res;
     }
 
     #if ALERT_ENABLED
         Result resAlertService = setupAlertService(ALERT_PIN);
         if (resAlertService.status == -1) {
-            LOG_ERROR(resAlertService.message);
             cleanup(res.i2cFd, res.fileFd, NULL);
+            LOG_ERROR(resAlertService.message);
             return res;
         }
     #endif
 
-    configureElectricalData(res.i2cFd);
+    #if DATA_LOGGER_ENABLED
+        Result resCreateLog = createLogFile(DATA_LOGGER_PATH);
+        if (resCreateLog.status == -1) {
+            cleanup(res.i2cFd, res.fileFd, NULL);
+            LOG_ERROR(resCreateLog.message);
+            return res;
+        }
+    #endif
 
     res.fileFd = open(SHM_BACKUP, O_CREAT | O_RDWR, RW_PERMISSION);
     if (res.fileFd == -1) {
@@ -94,6 +106,9 @@ SetupResult setup() {
     }
 
     ftruncate(res.fileFd, DATA_SIZE);
+
+    configureElectricalData(res.i2cFd);
+    
     return res;
 }
 
@@ -106,13 +121,6 @@ int main() {
         cleanup(res.i2cFd, res.fileFd, soc_mem_ref);
         return -1;
     }
-    
-    #if DATA_LOGGER_ENABLED
-        Result resCreateLog = createLogFile(DATA_LOGGER_PATH);
-        if (resCreateLog.status == -1) {
-            LOG_ERROR(resCreateLog.message);
-        }
-    #endif
 
     #if INFO_LOGGER_ENABLED
         LOG_INFO("Initial SoC: %.3f", *soc_mem_ref);
