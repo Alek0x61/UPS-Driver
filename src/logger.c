@@ -34,6 +34,10 @@ void logMessage(int logLevel, const char* format, ...) {
             break;
     }
 
+    if (logLevel == LOG_ERROR_CODE) {
+        fprintf(stderr, format, args); 
+    }
+
     vfprintf(file, format, args);
     fprintf(file, "\n");
     fflush(file); 

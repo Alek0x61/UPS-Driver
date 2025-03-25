@@ -68,7 +68,7 @@ float updateStateOfCharge(float soc, float current, float time_hours) {
 
 int calculateChargingSoC(float *soc_mem_ref) {
     float calibration = chargeCalibration();
-    if (abs(*soc_mem_ref - calibration) > 0) {
+    if (fabs((*soc_mem_ref) - calibration) > 0.2) {
         *soc_mem_ref = calibration;
     }
 

@@ -17,6 +17,7 @@
 #include "include/data_logger.h"
 
 typedef struct {
+    float* soc_mem_ref;
     int i2cFd;
     int fileFd;
     int status;
@@ -58,6 +59,7 @@ Result configureINA219(int i2cFd) {
 
 SetupResult setup() {
     SetupResult res;
+    res.status = -1;
     res.i2cFd = -1;
     res.fileFd = -1;
     res.status = -1;
@@ -108,23 +110,26 @@ SetupResult setup() {
     ftruncate(res.fileFd, DATA_SIZE);
 
     configureElectricalData(res.i2cFd);
-    
+
+    res.soc_mem_ref = mmap(NULL, DATA_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, res.fileFd, 0);
+    if (res.soc_mem_ref == MAP_FAILED) {
+        LOG_ERROR("%s %s", "mmap failed:", strerror(errno));
+        cleanup(res.i2cFd, res.fileFd, res.soc_mem_ref);
+        return res;
+    }
+
+    #if INFO_LOGGER_ENABLED
+        LOG_INFO("Initial SoC: %.3f", *res.soc_mem_ref);
+    #endif
+
+    res.status = 0;
     return res;
 }
 
 int main() {
     SetupResult res = setup();
-
-    float *soc_mem_ref = mmap(NULL, DATA_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, res.fileFd, 0);
-    if (soc_mem_ref == MAP_FAILED) {
-        LOG_ERROR("%s %s", "mmap failed:", strerror(errno));
-        cleanup(res.i2cFd, res.fileFd, soc_mem_ref);
+    if (res.status == -1)
         return -1;
-    }
-
-    #if INFO_LOGGER_ENABLED
-        LOG_INFO("Initial SoC: %.3f", *soc_mem_ref);
-    #endif
 
     while(1) {
         BatteryState state = getState();
@@ -133,13 +138,13 @@ int main() {
                 #if INFO_LOGGER_ENABLED
                     LOG_INFO("CHARGING\n");
                 #endif
-                calculateChargingSoC(soc_mem_ref);
+                calculateChargingSoC(res.soc_mem_ref);
                 break;
             case DISCHARGING:
                 #if INFO_LOGGER_ENABLED
                     LOG_INFO("DISCHARGING\n");
                 #endif
-                calculateDischargingSoC(soc_mem_ref);
+                calculateDischargingSoC(res.soc_mem_ref);
                 system("sudo shutdown -h now");
                 break;
             case ACPOWER:
@@ -160,7 +165,7 @@ int main() {
         sleep(1);
     }
 
-    cleanup(res.i2cFd, res.fileFd, soc_mem_ref);
+    cleanup(res.i2cFd, res.fileFd, res.soc_mem_ref);
 
     return 0;
 }
