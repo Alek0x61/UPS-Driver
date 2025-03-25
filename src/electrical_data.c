@@ -1,20 +1,5 @@
 #include "../include/electrical_data.h"
 
-#define REG_BUS_VOLTAGE      0x02
-#define REG_POWER            0x03
-#define REG_CURRENT          0x04
-
-// Used to convert raw ADC data into real-world units (eg. volts...)
-#define POWER_LSB            0.003048
-#define CURRENT_LSB          0.0001524
-#define VOLTAGE_LSB          0.004
-
-#define MIN_VOLTAGE          3.420
-#define MAX_VOLTAGE          4.000
-#define MAX_POWER            9.0
-
-#define CALIBRATION_RETRIES  3
-
 int fd;
 
 void configureElectricalData(int p_fd) {
@@ -46,42 +31,65 @@ float convertToValidUnit(int16_t rawValue, float lsb) {
     return rawValue * lsb;
 }
 
-float tryReadPower(float* power) {
+int tryReadPower(float* power) {
+    int attempts = 0;
     int16_t powerRaw;
-    int result = tryReadRegister(REG_POWER, &powerRaw);
-    *power = (float)convertToValidUnit(powerRaw, POWER_LSB);
-    return result;
-}
-
-float tryReadCurrent(float* current) {
-    int16_t currentRaw;
-    int result = tryReadRegister(REG_CURRENT, &currentRaw);
-    *current = (float)convertToValidUnit(currentRaw, CURRENT_LSB);
-    return result;
-}
-
-float tryReadVoltage(float* voltage) {
-    int16_t voltageRaw;
-    int result = tryReadRegister(REG_BUS_VOLTAGE, &voltageRaw);
-    voltageRaw = (voltageRaw >> 3);
-    *voltage = convertToValidUnit(voltageRaw, VOLTAGE_LSB);
-    return result;
-}
-
-float dischargeCalibration() {
-    float busVoltage = 0;
-    for (char i = 0; i < CALIBRATION_RETRIES; i++) {
-        tryReadVoltage(&busVoltage);
-        sleep(2);
-    }
-    return (busVoltage - MIN_VOLTAGE) / (MAX_VOLTAGE - MIN_VOLTAGE);
-}
-
-float chargeCalibration() {
-    float power = 0;
-    for (char i = 0; i < CALIBRATION_RETRIES; i++) {
-        tryReadPower(&power);
+    int result;
+    while (attempts < MAX_RETRIES) {
+        result = tryReadRegister(REG_POWER, &powerRaw);
+        if (result == 0) {
+            *power = (float)convertToValidUnit(powerRaw, POWER_LSB);
+            return 0;
+        }
+        attempts++;
         sleep(1);
     }
-    return 1 - (power / MAX_POWER);
+    return result;
+}
+
+int tryReadCurrent(float* current) {
+    int attempts = 0;
+    int16_t currentRaw;
+    int result;
+    while (attempts < MAX_RETRIES) {
+        result = tryReadRegister(REG_CURRENT, &currentRaw);
+        if (result == 0) {
+            *current = (float)convertToValidUnit(currentRaw, CURRENT_LSB);
+            return 0;
+        }
+        attempts++;
+        sleep(1);
+    }
+    return result;
+}
+
+int tryReadVoltage(float* voltage) {
+    int attempts = 0;
+    int16_t voltageRaw;
+    int result;
+    while (attempts < MAX_RETRIES) {
+        result = tryReadRegister(REG_BUS_VOLTAGE, &voltageRaw);
+        if (result == 0) {
+            voltageRaw = (voltageRaw >> 3);
+            *voltage = (float)convertToValidUnit(voltageRaw, VOLTAGE_LSB);
+            return 0;
+        }
+        attempts++;
+        sleep(1);
+    }
+    return result;
+}
+
+int dischargeCalibration(float* calibration) {
+    float busVoltage = 0;
+    int result = tryReadVoltage(&busVoltage);
+    *calibration = (busVoltage - MIN_VOLTAGE) / (MAX_VOLTAGE - MIN_VOLTAGE);
+    return result;
+}
+
+int chargeCalibration(float* calibration) {
+    float power = 0;
+    int result = tryReadVoltage(&power);
+    *calibration = 1 - (power / MAX_POWER);
+    return result;
 }

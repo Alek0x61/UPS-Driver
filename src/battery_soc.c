@@ -17,7 +17,7 @@ BatteryState getState() {
         LOG_ERROR("Failed to get valid voltage measurement %s", strerror(voltageRes));
         return -1; 
     }
-    if (voltage < MIN_VOLTAGE_CUTOFF) {
+    if (voltage < MIN_VOLTAGE) {
         return DEPLETED;
     }
 
@@ -67,20 +67,39 @@ float updateStateOfCharge(float soc, float current, float time_hours) {
 }
 
 int calculateChargingSoC(float *soc_mem_ref) {
-    float calibration = chargeCalibration();
-    if (fabs((*soc_mem_ref) - calibration) > 0.2) {
-        *soc_mem_ref = calibration;
-    }
-
     struct timeval previous_time;
     gettimeofday(&previous_time, NULL);
 
+    float calibration = 0;
+    int calibResult = chargeCalibration(&calibration);
+    if (calibResult < 0) {
+        LOG_ERROR("Failed to get valid charge calibration %s", strerror(calibResult));
+        return -1;        
+    }
+
+    #if INFO_LOGGER_ENABLED
+        LOG_INFO("Calibration SoC: %.3f", calibration);
+    #endif
+    if (fabs((*soc_mem_ref) - calibration) > 0.4) {
+        *soc_mem_ref = calibration;
+    }
+
     while (1) {
+        float power;
+        float powerRes = tryReadPower(&power);
+        if (powerRes < 0) {
+            LOG_ERROR("Failed to get valid power measurement %s", strerror(powerRes));
+        }
+
         float current;
         float currentRes = tryReadCurrent(&current);
         if (currentRes < 0) {
             LOG_ERROR("Failed to get valid current measurement %s", strerror(currentRes));
             return -1; 
+        }
+
+        if (power <= 0.05 && current >= 0 && current <= 0.01) { // Charging done
+            break;
         }
 
         if (current < 0) { // Charger was unplugged
@@ -94,32 +113,22 @@ int calculateChargingSoC(float *soc_mem_ref) {
 
         #if DATA_LOGGER_ENABLED
             float voltage;
-            float power;
-
             float voltageRes = tryReadVoltage(&voltage);
             if (voltageRes < 0) {
                 LOG_ERROR("Failed to get valid voltage measurement %s", strerror(voltageRes));
             }
 
-            float powerRes = tryReadPower(&power);
-            if (powerRes < 0) {
-                LOG_ERROR("Failed to get valid power measurement %s", strerror(powerRes));
-            }
             logMessages(current, power, voltage, delta_time, *soc_mem_ref);
         #endif
 
         *soc_mem_ref = trimSoc(*soc_mem_ref);
 
         sleep(5);
-
-        if (current == 0) {
-            break;
-        }
     }
     while (*soc_mem_ref < 1) {
-        *(soc_mem_ref) += 0.01;
+        *(soc_mem_ref) += 0.005;
         #if INFO_LOGGER_ENABLED
-            LOG_INFO("Gracefully decreasing SoC : %.3f", *soc_mem_ref);
+            LOG_INFO("Gracefully increasing SoC : %.3f", *soc_mem_ref);
         #endif
 
         sleep(1);
@@ -129,12 +138,22 @@ int calculateChargingSoC(float *soc_mem_ref) {
 }
 
 int calculateDischargingSoC(float *soc_mem_ref) {
-    if (*soc_mem_ref == 0) {
-        *soc_mem_ref = dischargeCalibration();
-    }
-
     struct timeval previous_time;
     gettimeofday(&previous_time, NULL);
+
+    float calibration = 0;
+    int calibResult = dischargeCalibration(&calibration);
+    if (calibResult < 0) {
+        LOG_ERROR("Failed to get valid discharge calibration %s", strerror(calibResult));
+        return -1;        
+    }
+
+    #if INFO_LOGGER_ENABLED
+        LOG_INFO("Calibration SoC: %.3f", calibration);
+    #endif
+    if (fabs((*soc_mem_ref) - calibration) > 0.4) {
+        *soc_mem_ref = calibration;
+    }
 
     while (1) {
         float current;
@@ -155,14 +174,14 @@ int calculateDischargingSoC(float *soc_mem_ref) {
             return -1; 
         }
 
+        if (voltage < MIN_VOLTAGE) {
+            break;
+        }
+
         double delta_time = calculateDeltaTime(&previous_time);
         double time_hours = (delta_time - 0.7) / 3600.00;
 
         *soc_mem_ref = updateStateOfCharge(*soc_mem_ref, current, time_hours);
-
-        if (voltage < MIN_VOLTAGE_CUTOFF) {
-            break;
-        }
 
         #if DATA_LOGGER_ENABLED
             float power;
@@ -178,9 +197,9 @@ int calculateDischargingSoC(float *soc_mem_ref) {
         sleep(5);
     }
     while (*soc_mem_ref > 0) {
-        *(soc_mem_ref) -= 0.01; 
+        *(soc_mem_ref) -= 0.005; 
         #if INFO_LOGGER_ENABLED
-            LOG_INFO("Gracefully increasing SoC: %.3f", *soc_mem_ref);
+            LOG_INFO("Gracefully decreasing SoC: %.3f", *soc_mem_ref);
         #endif
         sleep(1);
     }
