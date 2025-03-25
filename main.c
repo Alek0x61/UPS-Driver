@@ -62,7 +62,6 @@ SetupResult setup() {
     res.status = -1;
     res.i2cFd = -1;
     res.fileFd = -1;
-    res.status = -1;
 
     if (initLog(MESSAGE_LOGGER_PATH) == -1) {
         return res;
