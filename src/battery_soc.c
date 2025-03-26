@@ -64,7 +64,7 @@ double calculateDeltaTime(struct timeval* previous_time) {
 
 float updateStateOfCharge(float soc, float current, float time_hours) {
     float soc_new = soc + (current / BATTERY_CAPACITY) * time_hours;
-    return trimSoc(soc);
+    return trimSoc(soc_new);
 }
 
 int calculateChargingSoC(float *soc_mem_ref) {
