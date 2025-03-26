@@ -89,7 +89,13 @@ int dischargeCalibration(float* calibration) {
 
 int chargeCalibration(float* calibration) {
     float power = 0;
-    int result = tryReadVoltage(&power);
-    *calibration = 1 - (power / MAX_POWER);
+    int result = tryReadPower(&power);
+
+    int powerInt = (int)power;
+
+    if (powerInt > MAX_POWER)
+        powerInt = MAX_POWER;
+
+    *calibration = 1 - (powerInt / MAX_POWER);
     return result;
 }

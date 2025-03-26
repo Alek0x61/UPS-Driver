@@ -81,7 +81,7 @@ int calculateChargingSoC(float *soc_mem_ref) {
     #if INFO_LOGGER_ENABLED
         LOG_INFO("Calibration SoC: %.3f", calibration);
     #endif
-    if (fabs((*soc_mem_ref) - calibration) > 0.4) {
+    if (fabs((*soc_mem_ref) - calibration) > SOC_CALIBRATION_THRESHOLD) {
         *soc_mem_ref = calibration;
     }
 
@@ -108,7 +108,7 @@ int calculateChargingSoC(float *soc_mem_ref) {
         }
 
         double delta_time = calculateDeltaTime(&previous_time);
-        double time_hours = (delta_time - 0.6) / 3600.00;
+        double time_hours = (delta_time - DELTA_TIME_CHARGING_ADJUSTMENT) / 3600.00;
 
         *soc_mem_ref = updateStateOfCharge(*soc_mem_ref, current, time_hours);
 
@@ -122,17 +122,16 @@ int calculateChargingSoC(float *soc_mem_ref) {
             logMessages(current, power, voltage, delta_time, *soc_mem_ref);
         #endif
 
-        sleep(5);
+        sleep(SOC_REFRESH_DELAY);
     }
     while (*soc_mem_ref < 1) {
-        *(soc_mem_ref) = trimSoc((*soc_mem_ref) + 0.005);
+        *(soc_mem_ref) = trimSoc((*soc_mem_ref) + SOC_ADJUSTMENT_STEP);
         #if INFO_LOGGER_ENABLED
             LOG_INFO("Gracefully increasing SoC : %.3f", *soc_mem_ref);
         #endif
 
-        sleep(1);
+        sleep(SOC_REFRESH_DELAY);
     }
-    *soc_mem_ref = trimSoc(*soc_mem_ref);
     return 0;
 }
 
@@ -150,7 +149,7 @@ int calculateDischargingSoC(float *soc_mem_ref) {
     #if INFO_LOGGER_ENABLED
         LOG_INFO("Calibration SoC: %.3f", calibration);
     #endif
-    if (fabs((*soc_mem_ref) - calibration) > 0.4) {
+    if (fabs((*soc_mem_ref) - calibration) > SOC_CALIBRATION_THRESHOLD) {
         *soc_mem_ref = calibration;
     }
 
@@ -178,7 +177,7 @@ int calculateDischargingSoC(float *soc_mem_ref) {
         }
 
         double delta_time = calculateDeltaTime(&previous_time);
-        double time_hours = (delta_time - 0.7) / 3600.00;
+        double time_hours = (delta_time - DELTA_TIME_DISCHARGING_ADJUSTMENT) / 3600.00;
 
         *soc_mem_ref = updateStateOfCharge(*soc_mem_ref, current, time_hours);
 
@@ -191,16 +190,14 @@ int calculateDischargingSoC(float *soc_mem_ref) {
             logMessages(current, power, voltage, delta_time, *soc_mem_ref);
         #endif
 
-        sleep(5);
+        sleep(SOC_REFRESH_DELAY);
     }
     while (*soc_mem_ref > 0) {
-        *(soc_mem_ref) = trimSoc((*soc_mem_ref) - 0.005);
-        *(soc_mem_ref) -= 0.005; 
+        *(soc_mem_ref) = trimSoc((*soc_mem_ref) - SOC_ADJUSTMENT_STEP);
         #if INFO_LOGGER_ENABLED
             LOG_INFO("Gracefully decreasing SoC: %.3f", *soc_mem_ref);
         #endif
-        sleep(1);
+        sleep(SOC_REFRESH_DELAY);
     }
-    *soc_mem_ref = trimSoc(*soc_mem_ref);
     return 0;
 }

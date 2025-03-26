@@ -23,6 +23,10 @@ typedef struct {
     int status;
 } SetupResult;
 
+SetupResult setup();
+void cleanup(int i2cFd, int fd_file, float *soc_mem_ref);
+Result configureINA219(int i2cFd);
+
 void cleanup(int i2cFd, int fd_file, float *soc_mem_ref) {
     if (i2cFd != -1) {
         close(i2cFd);
