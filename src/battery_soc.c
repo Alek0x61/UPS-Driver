@@ -63,7 +63,8 @@ double calculateDeltaTime(struct timeval* previous_time) {
 }
 
 float updateStateOfCharge(float soc, float current, float time_hours) {
-    return soc + (current / BATTERY_CAPACITY) * time_hours;
+    float soc_new = soc + (current / BATTERY_CAPACITY) * time_hours;
+    return trimSoc(soc);
 }
 
 int calculateChargingSoC(float *soc_mem_ref) {
@@ -121,12 +122,10 @@ int calculateChargingSoC(float *soc_mem_ref) {
             logMessages(current, power, voltage, delta_time, *soc_mem_ref);
         #endif
 
-        *soc_mem_ref = trimSoc(*soc_mem_ref);
-
         sleep(5);
     }
     while (*soc_mem_ref < 1) {
-        *(soc_mem_ref) += 0.005;
+        *(soc_mem_ref) = trimSoc((*soc_mem_ref) + 0.005);
         #if INFO_LOGGER_ENABLED
             LOG_INFO("Gracefully increasing SoC : %.3f", *soc_mem_ref);
         #endif
@@ -192,11 +191,10 @@ int calculateDischargingSoC(float *soc_mem_ref) {
             logMessages(current, power, voltage, delta_time, *soc_mem_ref);
         #endif
 
-        *soc_mem_ref = trimSoc(*soc_mem_ref);
-
         sleep(5);
     }
     while (*soc_mem_ref > 0) {
+        *(soc_mem_ref) = trimSoc((*soc_mem_ref) - 0.005);
         *(soc_mem_ref) -= 0.005; 
         #if INFO_LOGGER_ENABLED
             LOG_INFO("Gracefully decreasing SoC: %.3f", *soc_mem_ref);
